@@ -432,3 +432,24 @@ type Row interface {
 }
 
 type RowFactory func() Row
+
+func ChunkRows(done <-chan struct{}, rows []Row, size int) <-chan []Row {
+	ch := make(chan []Row)
+
+	go func() {
+		defer close(ch)
+		for i := 0; i < len(rows); i += size {
+			end := i + size
+			if end > len(rows) {
+				end = len(rows)
+			}
+			select {
+			case ch <- rows[i:end]:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return ch
+}

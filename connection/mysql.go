@@ -702,26 +702,51 @@ func (dbw *DBWrapper) SqlBulkInsert(rows []Row, stmt *BulkInsertStmt) error {
 
 	DbBulkInserts.Inc()
 
-	placeholders := make([]string, len(rows))
-	values := make([]interface{}, len(rows)*stmt.NumField)
-	j := 0
+	done := make(chan struct{})
+	defer close(done)
 
-	for i, r := range rows {
-		placeholders[i] = stmt.Placeholder
+	chErr := make(chan error)
+	wg := sync.WaitGroup{}
+	wgDone := make(chan struct{})
 
-		for _, v := range r.InsertValues() {
-			values[j] = v
-			j++
-		}
+	for b := range ChunkRows(done, rows, 500) {
+		wg.Add(1)
+		go func(bulk []Row) {
+			defer wg.Done()
+			placeholders := make([]string, len(bulk))
+			values := make([]interface{}, len(bulk)*stmt.NumField)
+			j := 0
+
+			for i, r := range bulk {
+				placeholders[i] = stmt.Placeholder
+
+				for _, v := range r.InsertValues() {
+					values[j] = v
+					j++
+				}
+			}
+
+			query := fmt.Sprintf(stmt.Format, strings.Join(placeholders, ", "))
+
+			_, err := dbw.WithRetry(func() (result sql.Result, e error) {
+				return dbw.SqlExec(mysqlObservers.bulkInsert, query, values...)
+			})
+
+			if err != nil {
+				chErr <- err
+			}
+		}(b)
 	}
 
-	query := fmt.Sprintf(stmt.Format, strings.Join(placeholders, ", "))
+	go func() {
+		wg.Wait()
+		close(wgDone)
+	}()
 
-	_, err := dbw.WithRetry(func() (result sql.Result, e error) {
-		return dbw.SqlExec(mysqlObservers.bulkInsert, query, values...)
-	})
-
-	if err != nil {
+	select {
+	case <-wgDone:
+		break
+	case err := <-chErr:
 		return err
 	}
 
@@ -766,25 +791,50 @@ func (dbw *DBWrapper) SqlBulkUpdate(rows []Row, stmt *BulkUpdateStmt) error {
 
 	DbBulkUpdates.Inc()
 
-	placeholders := make([]string, len(rows))
-	values := make([]interface{}, len(rows)*stmt.NumField)
-	j := 0
+	done := make(chan struct{})
+	defer close(done)
 
-	for i, r := range rows {
-		placeholders[i] = stmt.Placeholder
+	chErr := make(chan error)
+	wg := sync.WaitGroup{}
+	wgDone := make(chan struct{})
 
-		for _, v := range r.InsertValues() {
-			values[j] = v
-			j++
-		}
+	for b := range ChunkRows(done, rows, 500) {
+		wg.Add(1)
+		go func(bulk []Row) {
+			defer wg.Done()
+			placeholders := make([]string, len(bulk))
+			values := make([]interface{}, len(bulk)*stmt.NumField)
+			j := 0
+
+			for i, r := range bulk {
+				placeholders[i] = stmt.Placeholder
+
+				for _, v := range r.InsertValues() {
+					values[j] = v
+					j++
+				}
+			}
+
+			query := fmt.Sprintf(stmt.Format, strings.Join(placeholders, ", "))
+
+			_, err := dbw.WithRetry(func() (result sql.Result, e error) {
+				return dbw.SqlExec(mysqlObservers.bulkUpdate, query, values...)
+			})
+			if err != nil {
+				chErr <- err
+			}
+		}(b)
 	}
 
-	query := fmt.Sprintf(stmt.Format, strings.Join(placeholders, ", "))
+	go func() {
+		wg.Wait()
+		close(wgDone)
+	}()
 
-	_, err := dbw.WithRetry(func() (result sql.Result, e error) {
-		return dbw.SqlExec(mysqlObservers.bulkUpdate, query, values...)
-	})
-	if err != nil {
+	select {
+	case <-wgDone:
+		break
+	case err := <-chErr:
 		return err
 	}
 
